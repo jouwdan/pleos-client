@@ -6,13 +6,11 @@ The client handles authentication, one retry for expired access tokens, rate-lim
 
 ## Installation
 
-Requires Python 3.11 or later. The initial `0.1.0` release is being prepared; until it is published on PyPI, install from a local checkout:
+Requires Python 3.11 or later.
 
 ```sh
-python -m pip install .
+python -m pip install pleos-client
 ```
-
-After publication, install with `python -m pip install pleos-client`.
 
 ## Usage
 
@@ -79,7 +77,7 @@ Tests use synthetic responses and need no Pleos account. CI checks Python 3.11 a
 
 ## Releasing
 
-Releases require maintainer approval. Before the first release, configure a [pending PyPI trusted publisher](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/) with project `pleos-client`, owner `jouwdan`, repository `pleos-client`, workflow `publish.yml` and environment `pypi`.
+Releases require maintainer approval.
 
 After approval, tag the reviewed commit as `v<version>` matching `pyproject.toml` and publish its GitHub release. The public release workflow verifies that match, runs validation, builds distributions and publishes those artifacts to PyPI through OIDC. Ordinary pushes and pull requests only validate and build; they do not publish packages. No PyPI token is stored in this repository.
 
