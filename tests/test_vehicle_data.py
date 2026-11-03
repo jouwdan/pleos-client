@@ -89,6 +89,47 @@ class VehicleDataTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(self.client.trip_max_days)
                 self.assertEqual(self.client.get.await_count, 2)
 
+    async def test_optional_zone_is_preserved_when_successful_clipped_or_failed(self):
+        for zone, encoded in (("UTC", "UTC"), ("Europe/Dublin", "Europe%2FDublin")):
+            with self.subTest(zone=zone):
+                query = self.query | {"zoneId": zone}
+                shorter = query | {"startDate": "20261101"}
+                self.client.trip_max_days = None
+                self.client.get = AsyncMock(side_effect=[{}, ApiError(400, "4001"), {}, {}])
+                self.assertEqual(
+                    (await self.client.vehicle_data("CAR", "speed", query)).query, query
+                )
+                self.assertEqual(
+                    (await self.client.vehicle_data("CAR", "speed", query)).query, shorter
+                )
+                self.assertEqual(
+                    (await self.client.vehicle_data("CAR", "speed", query)).query, shorter
+                )
+                self.assertEqual(
+                    self.client.get.await_args_list,
+                    [
+                        call(
+                            f"/v1/vehicles/CAR/speed?startDate=20261027&endDate=20261102&zoneId={encoded}"
+                        ),
+                        call(
+                            f"/v1/vehicles/CAR/speed?startDate=20261027&endDate=20261102&zoneId={encoded}"
+                        ),
+                        call(
+                            f"/v1/vehicles/CAR/speed?startDate=20261101&endDate=20261102&zoneId={encoded}"
+                        ),
+                        call(
+                            f"/v1/vehicles/CAR/speed?startDate=20261101&endDate=20261102&zoneId={encoded}"
+                        ),
+                    ],
+                )
+                self.client.trip_max_days = None
+                failure = ApiError(404, "4045")
+                self.client.get = AsyncMock(side_effect=[ApiError(422, "4001"), failure])
+                with self.assertRaises(ApiError):
+                    await self.client.vehicle_data("CAR", "speed", query)
+                self.assertEqual(failure.query, shorter)
+                self.assertEqual(query, self.query | {"zoneId": zone})
+
     async def test_unrelated_errors_and_short_ranges_are_not_retried(self):
         for query, endpoint, error in (
             (self.query, "speed", ApiError(400, "4045")),
@@ -142,6 +183,9 @@ class VehicleDataTests(unittest.IsolatedAsyncioTestCase):
             ("CAR", "locations", self.query),
             ("CAR", "speed", {"startDate": "20261101"}),
             ("CAR", "speed", self.query | {"extra": "private"}),
+            ("CAR", "speed", self.query | {"zoneId": ""}),
+            ("CAR", "speed", self.query | {"zoneId": "  "}),
+            ("CAR", "speed", self.query | {"zoneId": 1}),
             ("CAR", "speed", {"startDate": "2026111", "endDate": "20261102"}),
             ("CAR", "speed", {"startDate": "２０２６１１０１", "endDate": "20261102"}),
             ("CAR", "speed", {"startDate": "2026a101", "endDate": "20261102"}),

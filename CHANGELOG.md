@@ -4,6 +4,7 @@
 
 - Add `vehicle_data(vin, endpoint, date_range=None)` for all ten common vehicle endpoints. The client now owns VIN encoding, query construction and the single two-day fallback for refused longer trip queries.
 - Return `VehicleData` with the raw payload, response metadata and effective query. Failed API requests expose the effective query in `ApiError.query`.
+- Preserve an optional trip `zoneId`, including through date-range clipping and failed fallback requests.
 - Expose `vehicles_metadata` and the learned `trip_max_days` limit without requiring callers to know API URL paths.
 - Preserve `get()`, `vehicles()`, authentication renewal, rate-limit backoff, response validation and caller-owned sessions. Existing clients do not need to change.
 

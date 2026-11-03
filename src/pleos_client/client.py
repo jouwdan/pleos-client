@@ -80,13 +80,24 @@ class PleosClient:
             raise ValueError("A VIN and a supported vehicle endpoint are required")
         query = None
         if date_range is not None:
-            if endpoint not in TRIP_ENDPOINTS or set(date_range) != {"startDate", "endDate"}:
+            keys = set(date_range)
+            if (
+                endpoint not in TRIP_ENDPOINTS
+                or not {"startDate", "endDate"} <= keys
+                or not keys <= {"startDate", "endDate", "zoneId"}
+            ):
                 raise ValueError("Trip queries require startDate and endDate")
             if any(
-                len(value) != 8 or not value.isascii() or not value.isdigit()
-                for value in date_range.values()
+                len(date_range[key]) != 8
+                or not date_range[key].isascii()
+                or not date_range[key].isdigit()
+                for key in ("startDate", "endDate")
             ):
                 raise ValueError("Trip dates must use YYYYMMDD")
+            if "zoneId" in date_range and (
+                not isinstance(date_range["zoneId"], str) or not date_range["zoneId"].strip()
+            ):
+                raise ValueError("Trip zoneId must be a nonempty string")
             start, end = (
                 datetime.strptime(date_range[key], "%Y%m%d") for key in ("startDate", "endDate")
             )
@@ -95,6 +106,8 @@ class PleosClient:
             if self.trip_max_days is not None:
                 start = max(start, end - timedelta(days=self.trip_max_days - 1))
             query = {"startDate": start.strftime("%Y%m%d"), "endDate": end.strftime("%Y%m%d")}
+            if "zoneId" in date_range:
+                query["zoneId"] = date_range["zoneId"]
         path = f"/v1/vehicles/{quote(vin, safe='')}/{endpoint}"
         try:
             try:
@@ -107,10 +120,7 @@ class PleosClient:
                     or (end - start).days <= 1
                 ):
                     raise
-                query = {
-                    "startDate": (end - timedelta(days=1)).strftime("%Y%m%d"),
-                    "endDate": end.strftime("%Y%m%d"),
-                }
+                query = query | {"startDate": (end - timedelta(days=1)).strftime("%Y%m%d")}
                 data = await self.get(path + "?" + urlencode(query))
                 self.trip_max_days = 2
         except ApiError as error:
