@@ -2,7 +2,7 @@
 
 An asynchronous Python client for the official Pleos **personal Vehicle Data API**, used by [Pleos Vehicle Data for Home Assistant](https://github.com/jouwdan/ha-pleos). It has no Home Assistant dependency.
 
-The client handles authentication, one retry for expired access tokens, rate-limit backoff, bounded JSON responses and vehicle-list validation. It returns API data without creating entities, converting readings or storing vehicle history.
+The client handles authentication, one retry for expired access tokens, common vehicle endpoints, trip-date fallback, rate-limit backoff, bounded JSON responses and vehicle-list validation. It returns API data without creating entities, converting readings or storing vehicle history.
 
 ## Installation
 
@@ -19,7 +19,6 @@ Create a personal Client ID and Client Secret in [Pleos Playground](https://pleo
 ```python
 import asyncio
 import os
-from urllib.parse import quote
 
 import aiohttp
 
@@ -35,8 +34,8 @@ async def main():
             client_secret=os.environ["PLEOS_CLIENT_SECRET"],
         )
         for vehicle in await client.vehicles():
-            vin = quote(vehicle["vin"], safe="")
-            batteries = await client.get(f"/v1/vehicles/{vin}/batteries")
+            response = await client.vehicle_data(vehicle["vin"], "batteries")
+            batteries = response.data
             # Use batteries locally; avoid logging vehicle data or credentials.
 
 
@@ -46,7 +45,11 @@ asyncio.run(main())
 The caller supplies and closes the `aiohttp.ClientSession`. Reuse one client per account and await each request before starting another. The client performs no background polling and does not close your session.
 
 - `await client.vehicles()` returns a list of vehicle dictionaries, including VINs. An empty list is a valid response.
+- `client.vehicles_metadata` contains metadata from the latest successful vehicle-list request.
+- `await client.vehicle_data(vin, endpoint, date_range=None)` fetches a common vehicle endpoint and returns `VehicleData(data, metadata, query)`. The endpoint is one of `batteries`, `powertrains`, `locations`, `driving`, `status`, `freezer`, `powertrains/data`, `speed`, `driving/data`, or `status/data`. Pass an unencoded VIN; the client safely encodes it.
+- For trip endpoints, pass dates as `{"startDate": "20261027", "endDate": "20261102"}`. Dates are inclusive, must be valid `YYYYMMDD` values, and must be in order. If Pleos refuses a range longer than two days with HTTP 400 or 422 (except no-data code `4045`), the client retries once with the final two days. A successful retry sets `client.trip_max_days` to `2` and limits subsequent date queries on that client. It starts as `None`, meaning no limit has been learned. `VehicleData.query` and `ApiError.query` report the range actually requested, so callers can track the correct coverage even when the retry fails. The input mapping is never changed.
 - `await client.get(path)` accepts a relative API path, including any encoded query parameters, and returns the response's `data` value. Use the documented common snapshot and trip endpoints; the client does not implement Fleet API or business-user authentication.
+- A trip date mapping can also include a nonempty `zoneId`, such as `"UTC"`. It is encoded unchanged and preserved if the range is shortened; the client does not interpret the zone or convert the supplied dates.
 - `client.response_meta` contains selected response metadata, keyed by path without query parameters. It can contain VINs in its keys and request identifiers; review it before sharing.
 - `client.retry_at` is a `time.monotonic()` deadline. Requests made before it raise `ApiError` without network traffic.
 
@@ -54,7 +57,7 @@ The caller supplies and closes the `aiohttp.ClientSession`. Reuse one client per
 
 Catch `AuthError` when the personal key has expired, been revoked or is rejected. Renew the personal key manually; only short-lived access tokens renew automatically. Catch `ApiError` for transport, permission, rate-limit and malformed-response failures. It exposes `status` and `code`; status `0` means a connection failure or timeout, not an HTTP response from Pleos. Persistent 403 responses remain permission errors after one token renewal.
 
-HTTP 429 honours `Retry-After` (seconds or an HTTP date), with a minimum backoff of five minutes. Each request has a 30-second timeout and rejects bodies above 16 MiB, redirects, malformed JSON and non-finite JSON numbers. Failed data requests are not repeatedly retried, except for one access-token renewal.
+HTTP 429 honours `Retry-After` (seconds or an HTTP date), with a minimum backoff of five minutes. Each request has a 30-second timeout and rejects bodies above 16 MiB, redirects, malformed JSON and non-finite JSON numbers. Failed data requests are not repeatedly retried, except for one access-token renewal and the single refused-range retry described above. Invalid `vehicle_data` endpoint or date arguments raise `ValueError` before any request.
 
 This API is read-only. Polling cannot wake the car or force an upload. Returned values may be old or absent, and trip data can arrive later. Availability depends on the account, region, vehicle and consent settings. See the [Pleos API documentation](https://document.pleos.ai/en/api-reference/vehicle-data-api).
 

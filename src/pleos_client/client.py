@@ -2,14 +2,26 @@
 
 import json
 import time
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Any, NoReturn, cast
+from urllib.parse import quote, urlencode
 
 import aiohttp
 
 API = "https://api.pleos.ai"
 TOKEN_ERRORS = {"401", "4011", "40003", "40004"}
+TRIP_ENDPOINTS = frozenset({"powertrains/data", "speed", "driving/data", "status/data"})
+VEHICLE_ENDPOINTS = TRIP_ENDPOINTS | {
+    "batteries",
+    "powertrains",
+    "locations",
+    "driving",
+    "status",
+    "freezer",
+}
 
 
 def reject_nonfinite(value: str) -> NoReturn:
@@ -22,10 +34,20 @@ class ApiError(Exception):
     def __init__(self, status: int, code: str) -> None:
         super().__init__(f"Pleos HTTP {status}, code {code}")
         self.status, self.code = status, code
+        self.query: dict[str, str] | None = None
 
 
 class AuthError(Exception):
     """The personal key needs replacement."""
+
+
+@dataclass(frozen=True)
+class VehicleData:
+    """Vehicle payload, metadata and the date range actually requested."""
+
+    data: Any
+    metadata: dict[str, Any]
+    query: dict[str, str] | None
 
 
 class PleosClient:
@@ -43,6 +65,68 @@ class PleosClient:
         self.token: str | None = None
         self.retry_at: float = 0
         self.response_meta: dict[str, dict[str, Any]] = {}
+        self.trip_max_days: int | None = None
+
+    @property
+    def vehicles_metadata(self) -> dict[str, Any]:
+        """Metadata from the most recent successful vehicle-list request."""
+        return self.response_meta.get("/v1/vehicles/consent", {})
+
+    async def vehicle_data(
+        self, vin: str, endpoint: str, date_range: Mapping[str, str] | None = None
+    ) -> VehicleData:
+        """Fetch a common endpoint, retrying a refused long trip range once."""
+        if not vin or vin in {".", ".."} or endpoint not in VEHICLE_ENDPOINTS:
+            raise ValueError("A VIN and a supported vehicle endpoint are required")
+        query = None
+        if date_range is not None:
+            keys = set(date_range)
+            if (
+                endpoint not in TRIP_ENDPOINTS
+                or not {"startDate", "endDate"} <= keys
+                or not keys <= {"startDate", "endDate", "zoneId"}
+            ):
+                raise ValueError("Trip queries require startDate and endDate")
+            if any(
+                len(date_range[key]) != 8
+                or not date_range[key].isascii()
+                or not date_range[key].isdigit()
+                for key in ("startDate", "endDate")
+            ):
+                raise ValueError("Trip dates must use YYYYMMDD")
+            if "zoneId" in date_range and (
+                not isinstance(date_range["zoneId"], str) or not date_range["zoneId"].strip()
+            ):
+                raise ValueError("Trip zoneId must be a nonempty string")
+            start, end = (
+                datetime.strptime(date_range[key], "%Y%m%d") for key in ("startDate", "endDate")
+            )
+            if start > end:
+                raise ValueError("Trip startDate must not be after endDate")
+            if self.trip_max_days is not None:
+                start = max(start, end - timedelta(days=self.trip_max_days - 1))
+            query = {"startDate": start.strftime("%Y%m%d"), "endDate": end.strftime("%Y%m%d")}
+            if "zoneId" in date_range:
+                query["zoneId"] = date_range["zoneId"]
+        path = f"/v1/vehicles/{quote(vin, safe='')}/{endpoint}"
+        try:
+            try:
+                data = await self.get(path + ("?" + urlencode(query) if query else ""))
+            except ApiError as error:
+                if (
+                    query is None
+                    or error.status not in (400, 422)
+                    or error.code == "4045"
+                    or (end - start).days <= 1
+                ):
+                    raise
+                query = query | {"startDate": (end - timedelta(days=1)).strftime("%Y%m%d")}
+                data = await self.get(path + "?" + urlencode(query))
+                self.trip_max_days = 2
+        except ApiError as error:
+            error.query = query
+            raise
+        return VehicleData(data, self.response_meta.get(path, {}), query)
 
     async def _request(self, path: str, body: dict[str, str] | None = None) -> Any:
         if time.monotonic() < self.retry_at:
